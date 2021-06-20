@@ -35,6 +35,8 @@
 #include <iostream>
 #include <thread>
 #include "../shared.h"
+#include <inspectable.h>
+#include <AudioEngineEndpoint.h>
 
 
 // 1CB9AD4C-DBFA-4c32-B178-C2F568A703B2
@@ -45,6 +47,12 @@ DEFINE_GUID(m_IID_IMMDeviceEnumerator, 0xA95664D2, 0x9614, 0x4F35, 0xA7, 0x46, 0
 
 // F294ACFC-3146-4483-A7BF-ADDCA7C260E2
 DEFINE_GUID(m_IID_IAudioRenderClient, 0xF294ACFC, 0x3146, 0x4483, 0xA7, 0xBF, 0xAD, 0xDC, 0xA7, 0xC2, 0x60, 0xE2);
+
+// AF86E2E0-B12D-4C6A-9C5A-D7AA65101E90
+DEFINE_GUID(m_IID_IInspectable, 0xAF86E2E0, 0xB12D, 0x4C6A, 0x9C, 0x5A, 0xD7, 0xAA, 0x65, 0x10, 0x1E, 0x90);
+
+// 30A99515-1527-4451-AF9F-00C5F0234DAF
+DEFINE_GUID(m_IID_IAudioEndpoint, 0x30A99515, 0x1527, 0x4451, 0xAF, 0x9F, 0x00, 0xC5, 0xF0, 0x23, 0x4D, 0xAF);
 
 WORD bytesPerFrame = 0;
 
@@ -78,6 +86,27 @@ void onFormat(const WAVEFORMATEX *pFormat) {
     ReleaseMutex(mutex);
 }
 
+void guessTheFormat(IAudioRenderClient* client) {
+    IInspectable* pInspectable;
+    HRESULT hr = client->lpVtbl->QueryInterface(client, m_IID_IInspectable, (void**) &pInspectable);
+    if (pInspectable) {
+        pInspectable->lpVtbl->Release(pInspectable);
+    }
+    typedef HRESULT (*myfunc)(void **, REFIID, IAudioEndpoint**);
+
+#ifdef _WIN64
+    myfunc** func = *(myfunc***) &client[((int)hr < 0) * 2 + 0xc];
+#else
+    size_t pRenderClientAsInt = *(size_t*)&client;
+    myfunc **func = *(myfunc ***) (pRenderClientAsInt + 0x34);
+#endif
+    IAudioEndpoint* pAudioEndpoint;
+    (**func)((void**)func, m_IID_IAudioEndpoint, &pAudioEndpoint);
+    WAVEFORMATEX* waveformatex;
+    pAudioEndpoint->lpVtbl->GetFrameFormat(pAudioEndpoint, &waveformatex);
+    onFormat(waveformatex);
+}
+
 //////////////////////////////////////////////////////////////////////////////
 HRESULT (STDMETHODCALLTYPE *RealInitialize)(IAudioClient * This,
                                             AUDCLNT_SHAREMODE  ShareMode,
@@ -96,6 +125,7 @@ HRESULT STDMETHODCALLTYPE MineInitialize(IAudioClient *This,
                                          const WAVEFORMATEX *pFormat,
                                          LPCGUID AudioSessionGuid) {
 
+    printf("Initialize: ");
     onFormat(pFormat);
 
     return RealInitialize(This, ShareMode, StreamFlags, hnsBufferDuration, hnsPeriodicity, pFormat, AudioSessionGuid);
@@ -111,20 +141,8 @@ HRESULT STDMETHODCALLTYPE MineGetBuffer(IAudioRenderClient * This,
                                         UINT32  NumFramesRequested,
                                         BYTE    **ppData) {
     if (bytesPerFrame == NULL && OFFSET_IAudioRenderClient_Client) {
-        IAudioClient* audioClient = ((IAudioClient**)This)[OFFSET_IAudioRenderClient_Client];
-
-        WAVEFORMATEX* pFormat = NULL;
-        audioClient->lpVtbl->GetMixFormat(audioClient, &pFormat);
-        onFormat(pFormat);
-
-        printf("Get Format with magic (MAGIC!) (%i, %i, %lu, %lu, %i, %i, %i)\n",
-               pFormat->wFormatTag,
-               pFormat->nChannels,
-               pFormat->nSamplesPerSec,
-               pFormat->nAvgBytesPerSec,
-               pFormat->nBlockAlign,
-               pFormat->wBitsPerSample,
-               pFormat->cbSize);
+        printf("Format by MAGIC: ");
+        guessTheFormat(This);
     }
 
     HRESULT hr = RealGetBuffer(This, NumFramesRequested, ppData);

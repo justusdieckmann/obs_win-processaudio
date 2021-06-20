@@ -2,18 +2,15 @@
 #include <windows.h>
 #include <stdio.h>
 #include <util/platform.h>
-#include <util/threading.h>
 #include <ks.h>
 #include <ksmedia.h>
 #include "injector.hpp"
 #include "shared.h"
-
-struct hook_handle {
-    HANDLE process;
-};
+#include <audioengineendpoint.h>
 
 typedef struct {
     const char *processname;
+    float searchtime;
     HANDLE process;
     bool active;
     obs_source_t *src;
@@ -64,6 +61,8 @@ static void audiosource_update(void *data, obs_data_t *settings) {
     if (pas->hook_shutdown) {
         SetEvent(pas->hook_shutdown);
     }
+
+    pas->searchtime = 5;
 
     pas->processname = obs_data_get_string(settings, "process_name");
 }
@@ -132,7 +131,17 @@ DWORD WINAPI audio_capture_thread(LPVOID data) {
         data.speakers = ConvertSpeakerLayout(dwChannelMask, nChannels);
         data.samples_per_sec = 48000;
         data.timestamp = os_gettime_ns();
-        data.format = AUDIO_FORMAT_FLOAT;
+        switch (temp.wBitsPerSample) {
+            case 16:
+                data.format = AUDIO_FORMAT_16BIT;
+                break;
+            case 8:
+                data.format = AUDIO_FORMAT_U8BIT;
+                break;
+            case 32:
+            default:
+                data.format = AUDIO_FORMAT_FLOAT;
+        }
         data.timestamp -= util_mul_div64(size / bytesperframe, 1000000000ULL,
                                          data.samples_per_sec);
 
@@ -170,18 +179,17 @@ void init_audiocapture(process_audio_source *pas, DWORD procID) {
     pas->thread = CreateThread(NULL, 0, audio_capture_thread, pas, 0, NULL);
     pas->active = true;
 
-    blog(LOG_INFO, "Found Process!");
+    blog(LOG_INFO, "%s: Found Process!", pas->processname);
     pas->process = NULL;
     inject_hook(procID, &pas->process);
-    blog(LOG_INFO, "Injected Process!");
+    blog(LOG_INFO, "%s: Injected Process!", pas->processname);
 }
 
 static void audiosource_tick(void *data, float seconds) {
     process_audio_source *pas = data;
-    static float time = 5;
-    time += seconds;
-    if (time > 5) {
-        time = 0;
+    pas->searchtime += seconds;
+    if (pas->searchtime > 1) {
+        pas->searchtime = 0;
         if (pas->thread == NULL) {
             DWORD procID = findProcess(pas->processname);
             if (procID) {
@@ -193,10 +201,10 @@ static void audiosource_tick(void *data, float seconds) {
                 blog(LOG_INFO,"GetExitCodeProcess Failed: %lu", GetLastError());
             }
             if (exitCode != STILL_ACTIVE) {
-                blog(LOG_INFO, "Process aborted");
+                blog(LOG_INFO, "%s: Process aborted", pas->processname);
                 SetEvent(pas->hook_shutdown);
             } else {
-                blog(LOG_INFO, "Still active");
+                blog(LOG_INFO, "%s: Still active", pas->processname);
             }
         }
     }

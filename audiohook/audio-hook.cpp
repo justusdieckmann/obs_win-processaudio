@@ -89,6 +89,15 @@ void onFormat(const WAVEFORMATEX *pFormat) {
 void guessTheFormat(IAudioRenderClient* client) {
     IInspectable* pInspectable;
     HRESULT hr = client->lpVtbl->QueryInterface(client, m_IID_IInspectable, (void**) &pInspectable);
+
+    if (hr == S_OK) {
+        printf("QueryInterface == S_OK\n");
+    } else if (hr == S_FALSE) {
+        printf("QueryInterface == S_FALSE\n");
+    } else {
+        printf("QueryInterface: %ld", hr);
+    }
+
     if (pInspectable) {
         pInspectable->lpVtbl->Release(pInspectable);
     }
@@ -100,6 +109,9 @@ void guessTheFormat(IAudioRenderClient* client) {
     size_t pRenderClientAsInt = *(size_t*)&client;
     myfunc **func = *(myfunc ***) (pRenderClientAsInt + 0x34);
 #endif
+
+    printf("Pointers: %p, %p, %p\n", func, *func, **func);
+
     IAudioEndpoint* pAudioEndpoint;
     (**func)((void**)func, m_IID_IAudioEndpoint, &pAudioEndpoint);
     WAVEFORMATEX* waveformatex;
@@ -161,7 +173,7 @@ HRESULT STDMETHODCALLTYPE MineReleaseBuffer(IAudioRenderClient * This,
                                             UINT32 NumFramesWritten,
                                             DWORD dwFlags) {
 
-    if (!(dwFlags & AUDCLNT_BUFFERFLAGS_SILENT)) {
+    if (!(dwFlags & AUDCLNT_BUFFERFLAGS_SILENT) && bytesPerFrame != NULL) {
         WaitForSingleObject(mutex, INFINITE);
         DWORD realsize = NumFramesWritten * bytesPerFrame;
         memory->size = realsize;
@@ -196,17 +208,29 @@ void setupIAudioHooks() {
 
     hr = CoCreateInstance(CLSID_MMDeviceEnumerator, NULL,
                           CLSCTX_ALL, m_IID_IMMDeviceEnumerator, (void**)&pEnumerator);
+    if (hr != S_OK) {
+        printf("Cannot CoCreateInstance\n");
+    }
     EXIT_ON_ERROR(hr);
 
     hr = pEnumerator->lpVtbl->GetDefaultAudioEndpoint(pEnumerator, eRender, eConsole, &pDevice);
+    if (hr != S_OK) {
+        printf("Cannot GetDefaultAudioEntpoint\n");
+    }
     EXIT_ON_ERROR(hr);
 
     hr = pDevice->lpVtbl->Activate(pDevice,
                                    m_IID_IAudioClient, CLSCTX_ALL,
                                    NULL, (void**)&pAudioClient);
+    if (hr != S_OK) {
+        printf("Cannot Activate\n");
+    }
     EXIT_ON_ERROR(hr);
 
     hr = pAudioClient->lpVtbl->GetMixFormat(pAudioClient, &pwfx);
+    if (hr != S_OK) {
+        printf("Cannot GetMixFormat\n");
+    }
     EXIT_ON_ERROR(hr);
 
     hr = pAudioClient->lpVtbl->Initialize(pAudioClient,
@@ -216,10 +240,15 @@ void setupIAudioHooks() {
                                           0,
                                           pwfx,
                                           NULL);
+    if (hr != S_OK) {
+        printf("Cannot Initialize2\n");
+    }
     EXIT_ON_ERROR(hr);
 
     hr = pAudioClient->lpVtbl->GetService(pAudioClient, m_IID_IAudioRenderClient, (void**)&pRenderClient);
-
+    if (hr != S_OK) {
+        printf("Cannot GetService\n");
+    }
 
     for (int i = 1; i < 100; i++) {
         if (((IAudioClient**) pRenderClient)[i] == pAudioClient) {

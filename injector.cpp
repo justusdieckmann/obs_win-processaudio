@@ -7,7 +7,6 @@
 #include <iostream>
 #include "obsconfig.h"
 #include "injector.hpp"
-#include <detours.h>
 
 #include <obs-module.h>
 

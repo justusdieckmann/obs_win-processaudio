@@ -22,6 +22,7 @@ typedef struct {
     HANDLE memory_handle;
     mem_layout *memory;
     HANDLE thread;
+    BOOL shutdown;
 } process_audio_source;
 
 
@@ -40,6 +41,7 @@ void freeHook(process_audio_source *pas) {
     closeAndEmptyHandle(&pas->thread);
     closeAndEmptyHandle(&pas->process);
     pas->active = FALSE;
+    pas->shutdown = FALSE;
 }
 
 static const char *audiosource_name(void *type_data) {
@@ -57,21 +59,27 @@ static void audiosource_destroy(void *data) {
 
 static void audiosource_update(void *data, obs_data_t *settings) {
     process_audio_source *pas = data;
+}
 
-    if (pas->hook_shutdown) {
-        SetEvent(pas->hook_shutdown);
-    }
+static void audiosource_save(void *data, obs_data_t *settings) {
+    process_audio_source *pas = data;
 
+    blog(LOG_INFO, "Save");
+
+	if (pas->hook_shutdown != NULL) {
+        pas->shutdown = TRUE;
+	    SetEvent(pas->hook_shutdown);
+	}
+
+	pas->processname = obs_data_get_string(settings, "process_name");
     pas->searchtime = 5;
-
-    pas->processname = obs_data_get_string(settings, "process_name");
 }
 
 static void *audiosource_create(obs_data_t *settings, obs_source_t *source) {
     process_audio_source *context = bzalloc(sizeof(process_audio_source));
     context->src = source;
 
-    audiosource_update(context, settings);
+    audiosource_save(context, settings);
 
     return context;
 }
@@ -107,7 +115,7 @@ DWORD WINAPI audio_capture_thread(LPVOID data) {
     process_audio_source *pas = data;
     mem_layout temp;
 
-    while (WaitForSingleObject(pas->hook_shutdown, 0) == WAIT_TIMEOUT) {
+    while (WaitForSingleObject(pas->hook_shutdown, 0) == WAIT_TIMEOUT && !pas->shutdown) {
         if (WaitForSingleObject(pas->hook_capture, 500) != WAIT_OBJECT_0) {
             continue;
         }
@@ -190,7 +198,7 @@ static void audiosource_tick(void *data, float seconds) {
     pas->searchtime += seconds;
     if (pas->searchtime > 1) {
         pas->searchtime = 0;
-        if (pas->thread == NULL) {
+        if (pas->thread == NULL && !pas->shutdown && !pas->active) {
             DWORD procID = findProcess(pas->processname);
             if (procID) {
                 init_audiocapture(pas, procID);
@@ -220,5 +228,6 @@ struct obs_source_info win_processaudio_source = {
         .update       = audiosource_update,
         .get_properties = audiosource_get_properties,
         .icon_type    = OBS_ICON_TYPE_AUDIO_OUTPUT,
-        .video_tick   = audiosource_tick
+        .video_tick   = audiosource_tick,
+        .save = audiosource_save
 };

@@ -20,7 +20,8 @@ target_include_directories(audio-hook PUBLIC
 	${DETOURS_INCLUDE_DIR})
 
 target_link_libraries(audio-hook
-	${DETOURS_LIBRARIES})
+	${DETOURS_LIBRARIES}
+	WindowsApp.lib)
 
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
 	set(_output_suffix "64")

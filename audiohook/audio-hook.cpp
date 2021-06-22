@@ -37,6 +37,7 @@
 #include "../shared.h"
 #include <inspectable.h>
 #include <AudioEngineEndpoint.h>
+#include "winstring.h"
 
 
 // 1CB9AD4C-DBFA-4c32-B178-C2F568A703B2
@@ -68,11 +69,11 @@ HANDLE exit_event;
 HANDLE heartbeat_event;
 
 bool exitViaOBS = false;
+bool setFormat = false;
 
 void onFormat(const WAVEFORMATEX *pFormat) {
     bytesPerFrame = pFormat->nChannels * (pFormat->wBitsPerSample / 8);
     WaitForSingleObject(mutex, INFINITY);
-    printf("wBitsPerSample: %u, samplesPerSec: %lu\n", pFormat->wBitsPerSample, pFormat->nSamplesPerSec);
     memory->wBitsPerSample = pFormat->wBitsPerSample;
     memory->nSamplesPerSec = pFormat->nSamplesPerSec;
     memory->formatTag = pFormat->wFormatTag;
@@ -83,7 +84,10 @@ void onFormat(const WAVEFORMATEX *pFormat) {
     } else {
         memory->dwChannelMask = NULL;
     }
+    printf("bitsPerSample: %u, samplesPerSec: %lu, formatTag: %u, channels: %lu, channelMask: %lu\n",
+           pFormat->wBitsPerSample, pFormat->nSamplesPerSec, memory->formatTag, memory->nChannels, memory->dwChannelMask);
     ReleaseMutex(mutex);
+    setFormat = true;
 }
 
 void guessTheFormat(IAudioRenderClient* client) {
@@ -92,6 +96,25 @@ void guessTheFormat(IAudioRenderClient* client) {
 
     if (hr == S_OK) {
         printf("QueryInterface == S_OK\n");
+        /*ULONG count;
+        IID* iids;
+        HRESULT hr2 = pInspectable->lpVtbl->GetIids(pInspectable, &count, &iids);
+        if (hr2 == S_OK) {
+            printf("GetRuntimeClassName: S_OK\n");
+        } else if (hr2 == E_OUTOFMEMORY) {
+            printf("GetRuntimeClassName: E_OUTOFMEMORY\n");
+        } else if (hr2 == E_ILLEGAL_METHOD_CALL) {
+            printf("GetRuntimeClassName: E_ILLEGAL_METHOD_CALL\n");
+        } else {
+            printf("GetRuntimeClassName: %lx\n", hr2);
+        }
+        printf("Count: %lu\n", count);
+        for (ULONG i = 0; i < count; i++) {
+            LPOLESTR string;
+            StringFromIID(iids[i], &string);
+            printf("%lu, %ls", i, string);
+            CoTaskMemFree(string);
+        }*/
     } else if (hr == S_FALSE) {
         printf("QueryInterface == S_FALSE\n");
     } else {
@@ -105,15 +128,29 @@ void guessTheFormat(IAudioRenderClient* client) {
 
 #ifdef _WIN64
     myfunc** func = *(myfunc***) &client[((int)hr < 0) * 2 + 0xc];
+
+    int offset = ((int)hr < 0) * 2 + 0xc;
+    IUnknown *iUnknown = ((IUnknown**) client)[offset];
 #else
     size_t pRenderClientAsInt = *(size_t*)&client;
     myfunc **func = *(myfunc ***) (pRenderClientAsInt + 0x34);
+
+    int offset = 0x34;
+
+    //IUnknown *iUnknown = ((IUnknown**) client)[offset];
+    IUnknown *iUnknown = *(IUnknown**) (pRenderClientAsInt + 0x34);
+
 #endif
 
     printf("Pointers: %p, %p, %p\n", func, *func, **func);
 
     IAudioEndpoint* pAudioEndpoint;
-    (**func)((void**)func, m_IID_IAudioEndpoint, &pAudioEndpoint);
+
+    iUnknown->lpVtbl->QueryInterface(iUnknown, m_IID_IAudioEndpoint, (void**) &pAudioEndpoint);
+
+    printf("sizeof(IUnknown): %zu, sizeof(IAudioEndpoint): %zu, sizeof(IAudioRenderClient): %zu\n",
+           sizeof(IUnknown), sizeof(IAudioEndpoint), sizeof(IAudioRenderClient));
+
     WAVEFORMATEX* waveformatex;
     pAudioEndpoint->lpVtbl->GetFrameFormat(pAudioEndpoint, &waveformatex);
     onFormat(waveformatex);
@@ -152,7 +189,8 @@ HRESULT (STDMETHODCALLTYPE *RealGetBuffer)(IAudioRenderClient * This,
 HRESULT STDMETHODCALLTYPE MineGetBuffer(IAudioRenderClient * This,
                                         UINT32  NumFramesRequested,
                                         BYTE    **ppData) {
-    if (bytesPerFrame == NULL && OFFSET_IAudioRenderClient_Client) {
+
+    if (!setFormat) {
         printf("Format by MAGIC: ");
         guessTheFormat(This);
     }
@@ -173,7 +211,7 @@ HRESULT STDMETHODCALLTYPE MineReleaseBuffer(IAudioRenderClient * This,
                                             UINT32 NumFramesWritten,
                                             DWORD dwFlags) {
 
-    if (!(dwFlags & AUDCLNT_BUFFERFLAGS_SILENT) && bytesPerFrame != NULL) {
+    if (!(dwFlags & AUDCLNT_BUFFERFLAGS_SILENT) && setFormat) {
         WaitForSingleObject(mutex, INFINITE);
         DWORD realsize = NumFramesWritten * bytesPerFrame;
         memory->size = realsize;
@@ -353,6 +391,31 @@ DWORD WINAPI waitForShutdown(void *data) {
     }
 }
 
+void freeHook() {
+    CloseHandle(event);
+    CloseHandle(mutex);
+    UnmapViewOfFile(memory);
+    CloseHandle(memory_handle);
+    CloseHandle(shutdown_event);
+    CloseHandle(exit_event);
+    CloseHandle(heartbeat_event);
+}
+
+void initFilelog() {
+    TCHAR filepath[MAX_PATH];
+
+    char *appdata = getenv("APPDATA");
+    char buffer[MAX_PATH];
+
+    GetModuleFileNameW(NULL, filepath, MAX_PATH);
+
+    wchar_t *filename = wcsrchr(filepath, '\\');
+
+    snprintf(buffer, MAX_PATH, "%s/obs-studio/logs/win-processlog_%ls.txt", appdata, (filename + 1));
+    freopen(buffer, "w", stdout);
+    setbuf(stdout, nullptr);
+}
+
 BOOL WINAPI DllMain(HINSTANCE hinst, DWORD dwReason, LPVOID reserved) {
     hinstance = hinst;
     (void)hinst;
@@ -363,8 +426,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD dwReason, LPVOID reserved) {
     }
 
     if (dwReason == DLL_PROCESS_ATTACH) {
-        AllocConsole();
-        freopen("CONOUT$", "w", stdout);
+        initFilelog();
 
         initHandles(GetCurrentProcessId());
         setupIAudioHooks();
@@ -400,10 +462,10 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD dwReason, LPVOID reserved) {
             TerminateThread(heartbeatThread, 0);
         }
 
-        printf("\n\n(THIS IS EXITED, YOU CAN CLOSE THE CONSOLE)\n");
-        fflush(stdout);
+        freeHook();
 
-        FreeConsole();
+        fflush(stdout);
+        fclose(stdout);
     }
     return TRUE;
 }

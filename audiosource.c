@@ -53,6 +53,7 @@ static void audiosource_destroy(void *data) {
     blog(LOG_INFO, "Destroy");
 
     if (pas->hook_shutdown) {
+        blog(LOG_INFO, "Sending shutdown!");
         SetEvent(pas->hook_shutdown);
     }
 }
@@ -71,7 +72,12 @@ static void audiosource_save(void *data, obs_data_t *settings) {
 	    SetEvent(pas->hook_shutdown);
 	}
 
-	pas->processname = obs_data_get_string(settings, "process_name");
+    const char* setting_process_name = obs_data_get_string(settings, "process_name");
+
+
+
+	pas->processname = calloc(strlen(setting_process_name) + 1, sizeof(char));
+    strcpy(pas->processname, setting_process_name);
     pas->searchtime = 5;
 }
 
@@ -132,6 +138,9 @@ DWORD WINAPI audio_capture_thread(LPVOID data) {
         DWORD nChannels = temp.nChannels;
         DWORD bytesperframe = nChannels * (temp.wBitsPerSample / 8);
         DWORD dwChannelMask = temp.dwChannelMask;
+
+        if (bytesperframe == 0)
+            continue;
 
         struct obs_source_audio data;
         data.data[0] = temp.data;

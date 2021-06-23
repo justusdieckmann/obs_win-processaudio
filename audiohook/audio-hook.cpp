@@ -37,7 +37,7 @@
 #include "../shared.h"
 #include <inspectable.h>
 #include <AudioEngineEndpoint.h>
-#include "winstring.h"
+#include "uuids.h"
 
 
 // 1CB9AD4C-DBFA-4c32-B178-C2F568A703B2
@@ -73,6 +73,7 @@ bool setFormat = false;
 
 void onFormat(const WAVEFORMATEX *pFormat) {
     bytesPerFrame = pFormat->nChannels * (pFormat->wBitsPerSample / 8);
+
     WaitForSingleObject(mutex, INFINITY);
     memory->wBitsPerSample = pFormat->wBitsPerSample;
     memory->nSamplesPerSec = pFormat->nSamplesPerSec;
@@ -81,11 +82,21 @@ void onFormat(const WAVEFORMATEX *pFormat) {
     if (memory->formatTag == WAVE_FORMAT_EXTENSIBLE) {
         WAVEFORMATEXTENSIBLE *formatextensible = (WAVEFORMATEXTENSIBLE *) pFormat;
         memory->dwChannelMask = formatextensible->dwChannelMask;
+        memory->isFloat = formatextensible->SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT || formatextensible->SubFormat == MEDIASUBTYPE_IEEE_FLOAT;
+        memory->subFormat = formatextensible->SubFormat;
+
+        LPOLESTR string;
+        StringFromIID(formatextensible->SubFormat, &string);
+        printf("bitsPerSample: %u, samplesPerSec: %lu, formatTag: %u, channels: %lu, channelMask: %lu, subformat: %ls\n",
+               pFormat->wBitsPerSample, pFormat->nSamplesPerSec, memory->formatTag, memory->nChannels, memory->dwChannelMask, string);
+        CoTaskMemFree(string);
     } else {
+        memory->isFloat = pFormat->wFormatTag == WAVE_FORMAT_IEEE_FLOAT;
         memory->dwChannelMask = NULL;
+        memset(&memory->subFormat, 0, sizeof(GUID));
+        printf("bitsPerSample: %u, samplesPerSec: %lu, formatTag: %u, channels: %lu, channelMask: %lu\n",
+               pFormat->wBitsPerSample, pFormat->nSamplesPerSec, memory->formatTag, memory->nChannels, memory->dwChannelMask);
     }
-    printf("bitsPerSample: %u, samplesPerSec: %lu, formatTag: %u, channels: %lu, channelMask: %lu\n",
-           pFormat->wBitsPerSample, pFormat->nSamplesPerSec, memory->formatTag, memory->nChannels, memory->dwChannelMask);
     ReleaseMutex(mutex);
     setFormat = true;
 }
@@ -93,33 +104,6 @@ void onFormat(const WAVEFORMATEX *pFormat) {
 void guessTheFormat(IAudioRenderClient* client) {
     IInspectable* pInspectable;
     HRESULT hr = client->lpVtbl->QueryInterface(client, m_IID_IInspectable, (void**) &pInspectable);
-
-    if (hr == S_OK) {
-        printf("QueryInterface == S_OK\n");
-        /*ULONG count;
-        IID* iids;
-        HRESULT hr2 = pInspectable->lpVtbl->GetIids(pInspectable, &count, &iids);
-        if (hr2 == S_OK) {
-            printf("GetRuntimeClassName: S_OK\n");
-        } else if (hr2 == E_OUTOFMEMORY) {
-            printf("GetRuntimeClassName: E_OUTOFMEMORY\n");
-        } else if (hr2 == E_ILLEGAL_METHOD_CALL) {
-            printf("GetRuntimeClassName: E_ILLEGAL_METHOD_CALL\n");
-        } else {
-            printf("GetRuntimeClassName: %lx\n", hr2);
-        }
-        printf("Count: %lu\n", count);
-        for (ULONG i = 0; i < count; i++) {
-            LPOLESTR string;
-            StringFromIID(iids[i], &string);
-            printf("%lu, %ls", i, string);
-            CoTaskMemFree(string);
-        }*/
-    } else if (hr == S_FALSE) {
-        printf("QueryInterface == S_FALSE\n");
-    } else {
-        printf("QueryInterface: %ld", hr);
-    }
 
     if (pInspectable) {
         pInspectable->lpVtbl->Release(pInspectable);
@@ -139,17 +123,11 @@ void guessTheFormat(IAudioRenderClient* client) {
 
     //IUnknown *iUnknown = ((IUnknown**) client)[offset];
     IUnknown *iUnknown = *(IUnknown**) (pRenderClientAsInt + 0x34);
-
 #endif
-
-    printf("Pointers: %p, %p, %p\n", func, *func, **func);
 
     IAudioEndpoint* pAudioEndpoint;
 
     iUnknown->lpVtbl->QueryInterface(iUnknown, m_IID_IAudioEndpoint, (void**) &pAudioEndpoint);
-
-    printf("sizeof(IUnknown): %zu, sizeof(IAudioEndpoint): %zu, sizeof(IAudioRenderClient): %zu\n",
-           sizeof(IUnknown), sizeof(IAudioEndpoint), sizeof(IAudioRenderClient));
 
     WAVEFORMATEX* waveformatex;
     pAudioEndpoint->lpVtbl->GetFrameFormat(pAudioEndpoint, &waveformatex);
@@ -174,13 +152,13 @@ HRESULT STDMETHODCALLTYPE MineInitialize(IAudioClient *This,
                                          const WAVEFORMATEX *pFormat,
                                          LPCGUID AudioSessionGuid) {
 
-    printf("Initialize: ");
+    printf("Initialize: %x, %lx\n", ShareMode, StreamFlags);
     onFormat(pFormat);
 
     return RealInitialize(This, ShareMode, StreamFlags, hnsBufferDuration, hnsPeriodicity, pFormat, AudioSessionGuid);
 }
 
-BYTE **yoppData;
+BYTE *pAudioBuffer = nullptr;
 
 HRESULT (STDMETHODCALLTYPE *RealGetBuffer)(IAudioRenderClient * This,
                                            UINT32  NumFramesRequested,
@@ -197,7 +175,9 @@ HRESULT STDMETHODCALLTYPE MineGetBuffer(IAudioRenderClient * This,
 
     HRESULT hr = RealGetBuffer(This, NumFramesRequested, ppData);
     if (hr == S_OK) {
-        yoppData = ppData;
+        pAudioBuffer = *ppData;
+    } else {
+        printf("GetBuffer failed: %lx", hr);
     }
     return hr;
 }
@@ -211,11 +191,15 @@ HRESULT STDMETHODCALLTYPE MineReleaseBuffer(IAudioRenderClient * This,
                                             UINT32 NumFramesWritten,
                                             DWORD dwFlags) {
 
-    if (!(dwFlags & AUDCLNT_BUFFERFLAGS_SILENT) && setFormat) {
+    if (!(dwFlags & AUDCLNT_BUFFERFLAGS_SILENT) && setFormat && pAudioBuffer != nullptr) {
         WaitForSingleObject(mutex, INFINITE);
         DWORD realsize = NumFramesWritten * bytesPerFrame;
+        if (realsize > AUDIO_CAPTURE_SHARED_MEMORY_SIZE) {
+            realsize = AUDIO_CAPTURE_SHARED_MEMORY_SIZE;
+            printf("WARNING: Buffer exceeds max size: %lu", realsize);
+        }
         memory->size = realsize;
-        memcpy((uint8_t*) memory->data, *yoppData, realsize);
+        memcpy((uint8_t*) memory->data, pAudioBuffer, realsize);
         ReleaseMutex(mutex);
         SetEvent(event);
     }
@@ -291,7 +275,6 @@ void setupIAudioHooks() {
     for (int i = 1; i < 100; i++) {
         if (((IAudioClient**) pRenderClient)[i] == pAudioClient) {
             OFFSET_IAudioRenderClient_Client = i;
-            std::cout << "Yay!!: " << i << std::endl;
         }
     }
 
@@ -427,8 +410,8 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD dwReason, LPVOID reserved) {
 
     if (dwReason == DLL_PROCESS_ATTACH) {
         initFilelog();
-
         initHandles(GetCurrentProcessId());
+
         setupIAudioHooks();
 
         waitingThread = CreateThread(NULL, 0, waitForShutdown, NULL, 0, NULL);

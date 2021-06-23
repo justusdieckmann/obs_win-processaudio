@@ -148,16 +148,21 @@ DWORD WINAPI audio_capture_thread(LPVOID data) {
         data.speakers = ConvertSpeakerLayout(dwChannelMask, nChannels);
         data.samples_per_sec = 48000;
         data.timestamp = os_gettime_ns();
-        switch (temp.wBitsPerSample) {
-            case 16:
-                data.format = AUDIO_FORMAT_16BIT;
-                break;
-            case 8:
-                data.format = AUDIO_FORMAT_U8BIT;
-                break;
-            case 32:
-            default:
-                data.format = AUDIO_FORMAT_FLOAT;
+        if (temp.isFloat) {
+            data.format = AUDIO_FORMAT_FLOAT;
+        } else {
+            switch (temp.wBitsPerSample) {
+                case 16:
+                    data.format = AUDIO_FORMAT_16BIT;
+                    break;
+                case 8:
+                    data.format = AUDIO_FORMAT_U8BIT;
+                    break;
+                case 32:
+                    data.format = AUDIO_FORMAT_32BIT;
+                default:
+                    data.format = AUDIO_FORMAT_FLOAT;
+            }
         }
         data.timestamp -= util_mul_div64(size / bytesperframe, 1000000000ULL,
                                          data.samples_per_sec);
@@ -205,7 +210,7 @@ void init_audiocapture(process_audio_source *pas, DWORD procID) {
 static void audiosource_tick(void *data, float seconds) {
     process_audio_source *pas = data;
     pas->searchtime += seconds;
-    if (pas->searchtime > 1) {
+    if (pas->searchtime > 1 || true) {
         pas->searchtime = 0;
         if (pas->thread == NULL && !pas->shutdown && !pas->active) {
             DWORD procID = findProcess(pas->processname);

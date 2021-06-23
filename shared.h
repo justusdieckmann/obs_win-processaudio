@@ -20,6 +20,8 @@ typedef struct {
     DWORD nSamplesPerSec;
     WORD wBitsPerSample;
     DWORD dwChannelMask;
+    BOOL isFloat;
+    GUID subFormat;
     // Size of data
     DWORD size;
     // Contains the actual data;

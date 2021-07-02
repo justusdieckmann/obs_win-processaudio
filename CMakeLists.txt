@@ -2,11 +2,12 @@ project(win-processaudio)
 
 set(win-processaudio_SOURCES
         plugin-main.c
-        audiosource.c
+        audiosource.cpp
         injector.cpp)
 
 set(win-processaudio_HEADERS
         injector.hpp
+        audiosource.hpp
         shared.h)
 
 add_library(win-processaudio MODULE

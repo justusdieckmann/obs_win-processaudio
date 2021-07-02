@@ -66,7 +66,6 @@ HANDLE memory_handle;
 mem_layout *memory;
 HANDLE shutdown_event;
 HANDLE exit_event;
-HANDLE heartbeat_event;
 
 bool exitViaOBS = false;
 bool setFormat = false;
@@ -347,14 +346,10 @@ void initHandles(DWORD procID) {
 
     sprintf(newname, "%s/%lu", AC_EXIT_EVENT, procID);
     exit_event = OpenEventA(EVENT_ALL_ACCESS, FALSE, newname);
-
-    sprintf(newname, "%s/%lu", AC_HEARTBEAT_EVENT, procID);
-    heartbeat_event = OpenEventA(EVENT_ALL_ACCESS, FALSE, newname);
 }
 
 HINSTANCE hinstance;
 HANDLE waitingThread;
-HANDLE heartbeatThread;
 
 DWORD WINAPI waitForShutdown(void *data) {
     std::cout << "Wait for Shutdown" << std::endl;
@@ -365,15 +360,6 @@ DWORD WINAPI waitForShutdown(void *data) {
     FreeLibraryAndExitThread(hinstance, 0);
 }
 
-[[noreturn]] DWORD WINAPI respondHeartbeat(void *data) {
-    while (true) {
-        if (WaitForSingleObject(heartbeat_event, 500) == WAIT_TIMEOUT) {
-            continue;
-        }
-        SetEvent(heartbeat_event);
-    }
-}
-
 void freeHook() {
     CloseHandle(event);
     CloseHandle(mutex);
@@ -381,7 +367,6 @@ void freeHook() {
     CloseHandle(memory_handle);
     CloseHandle(shutdown_event);
     CloseHandle(exit_event);
-    CloseHandle(heartbeat_event);
 }
 
 void initFilelog() {
@@ -415,7 +400,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD dwReason, LPVOID reserved) {
         setupIAudioHooks();
 
         waitingThread = CreateThread(NULL, 0, waitForShutdown, NULL, 0, NULL);
-        // heartbeatThread = CreateThread(NULL, 0, respondHeartbeat, NULL, 0, NULL);
+
         fflush(stdout);
     } else if (dwReason == DLL_PROCESS_DETACH) {
         SetEvent(exit_event);
@@ -440,9 +425,6 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD dwReason, LPVOID reserved) {
 
         if (waitingThread) {
             TerminateThread(waitingThread, 0);
-        }
-        if (heartbeatThread) {
-            TerminateThread(heartbeatThread, 0);
         }
 
         freeHook();

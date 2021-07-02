@@ -1,4 +1,5 @@
 #include <obs-module.h>
+#include "audiosource.hpp"
 #include <windows.h>
 #include <stdio.h>
 #include <util/platform.h>
@@ -9,7 +10,7 @@
 #include <audioengineendpoint.h>
 
 typedef struct {
-    const char *processname;
+    char *processname;
     float searchtime;
     HANDLE process;
     bool active;
@@ -17,7 +18,6 @@ typedef struct {
     HANDLE hook_capture;
     HANDLE hook_shutdown;
     HANDLE hook_exit;
-    HANDLE hook_heartbeat;
     HANDLE mutex;
     HANDLE memory_handle;
     mem_layout *memory;
@@ -49,7 +49,7 @@ static const char *audiosource_name(void *type_data) {
 }
 
 static void audiosource_destroy(void *data) {
-    process_audio_source *pas = data;
+    process_audio_source *pas = (process_audio_source*) data;
     blog(LOG_INFO, "Destroy");
 
     if (pas->hook_shutdown) {
@@ -59,11 +59,11 @@ static void audiosource_destroy(void *data) {
 }
 
 static void audiosource_update(void *data, obs_data_t *settings) {
-    process_audio_source *pas = data;
+    process_audio_source *pas = (process_audio_source*) data;
 }
 
 static void audiosource_save(void *data, obs_data_t *settings) {
-    process_audio_source *pas = data;
+    process_audio_source *pas = (process_audio_source*) data;
 
     blog(LOG_INFO, "Save");
 
@@ -76,13 +76,13 @@ static void audiosource_save(void *data, obs_data_t *settings) {
 
 
 
-	pas->processname = calloc(strlen(setting_process_name) + 1, sizeof(char));
+	pas->processname = (char*) calloc(strlen(setting_process_name) + 1, sizeof(char));
     strcpy(pas->processname, setting_process_name);
     pas->searchtime = 5;
 }
 
 static void *audiosource_create(obs_data_t *settings, obs_source_t *source) {
-    process_audio_source *context = bzalloc(sizeof(process_audio_source));
+    process_audio_source *context = (process_audio_source*) bzalloc(sizeof(process_audio_source));
     context->src = source;
 
     audiosource_save(context, settings);
@@ -118,7 +118,7 @@ static enum speaker_layout ConvertSpeakerLayout(DWORD layout, WORD channels) {
 }
 
 DWORD WINAPI audio_capture_thread(LPVOID data) {
-    process_audio_source *pas = data;
+    process_audio_source *pas = (process_audio_source*) data;
     mem_layout temp;
 
     while (WaitForSingleObject(pas->hook_shutdown, 0) == WAIT_TIMEOUT && !pas->shutdown) {
@@ -186,16 +186,13 @@ void init_audiocapture(process_audio_source *pas, DWORD procID) {
     sprintf(newname, "%s/%lu", AC_EXIT_EVENT, procID);
     pas->hook_exit = CreateEventA(NULL, FALSE, FALSE, newname);
 
-    sprintf(newname, "%s/%lu", AC_HEARTBEAT_EVENT, procID);
-    pas->hook_heartbeat = OpenEventA(EVENT_ALL_ACCESS, FALSE, newname);
-
     sprintf(newname, "%s/%lu", AUDIO_CAPTURE_MUTEX, procID);
     pas->mutex = CreateMutexA(NULL, FALSE, newname);
 
     sprintf(newname, "%s/%lu", AUDIO_CAPTURE_SHARED_MEMORY, procID);
     pas->memory_handle = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, sizeof(mem_layout),
                                             newname);
-    pas->memory = MapViewOfFile(pas->memory_handle, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(mem_layout));
+    pas->memory = (mem_layout*) MapViewOfFile(pas->memory_handle, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(mem_layout));
     memset(pas->memory, 0, sizeof(mem_layout));
 
     pas->thread = CreateThread(NULL, 0, audio_capture_thread, pas, 0, NULL);
@@ -208,9 +205,9 @@ void init_audiocapture(process_audio_source *pas, DWORD procID) {
 }
 
 static void audiosource_tick(void *data, float seconds) {
-    process_audio_source *pas = data;
+    process_audio_source *pas = (process_audio_source*) data;
     pas->searchtime += seconds;
-    if (pas->searchtime > 1 || true) {
+    if (pas->searchtime > 1) {
         pas->searchtime = 0;
         if (pas->thread == NULL && !pas->shutdown && !pas->active) {
             DWORD procID = findProcess(pas->processname);
@@ -232,16 +229,19 @@ static void audiosource_tick(void *data, float seconds) {
     }
 }
 
-struct obs_source_info win_processaudio_source = {
-        .id           = "processaudio_source",
-        .type         = OBS_SOURCE_TYPE_INPUT,
-        .output_flags = OBS_SOURCE_AUDIO,
-        .get_name     = audiosource_name,
-        .create       = audiosource_create,
-        .destroy      = audiosource_destroy,
-        .update       = audiosource_update,
-        .get_properties = audiosource_get_properties,
-        .icon_type    = OBS_ICON_TYPE_AUDIO_OUTPUT,
-        .video_tick   = audiosource_tick,
-        .save = audiosource_save
-};
+void win_processaudio_register_source() {
+    obs_source_info source = { nullptr };
+    source.id = "process_audio";
+    source.type = OBS_SOURCE_TYPE_INPUT;
+    source.output_flags = OBS_SOURCE_AUDIO;
+    source.get_name = audiosource_name;
+    source.create = audiosource_create;
+    source.destroy = audiosource_destroy;
+    source.get_properties = audiosource_get_properties;
+    source.update = audiosource_update;
+    source.video_tick = audiosource_tick;
+    source.save = audiosource_save;
+    source.icon_type = OBS_ICON_TYPE_AUDIO_OUTPUT;
+
+    obs_register_source(&source);
+}

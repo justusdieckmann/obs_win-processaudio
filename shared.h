@@ -25,7 +25,7 @@ typedef struct {
     // Size of data
     DWORD size;
     // Contains the actual data;
-    const uint8_t data[AUDIO_CAPTURE_SHARED_MEMORY_SIZE];
+    uint8_t data[AUDIO_CAPTURE_SHARED_MEMORY_SIZE];
 } mem_layout;
 
 #endif //OBS_STUDIO_OBJECT_NAMES_H
